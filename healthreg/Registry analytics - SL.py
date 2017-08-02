@@ -104,22 +104,23 @@ df.region = df.region.replace(region_name)
 dff = df.copy()
 #df = dff.copy()
 #%%
-def new_ids(df,cohort_years,return_as = 'set',pid = 'pid', year_col = 'year',  years_down = 3):
+def new_ids(df,cohort_years,return_as = 'set',ids = 'pid', year_col = 'year',  years_down = 3):
     """
     bappbipp
     """
     cohort = []
     for year in cohort_years:
-        ins = set(df[df[year_col] == year][pid])
-        befores =  set(df[df[year_col].isin(range(year-years_down,year))][pid])
+        ins = set(df[df[year_col] == year][ids])
+        befores =  set(df[df[year_col].isin(range(year-years_down,year))][ids])
         new = ins.difference(befores)
-        cohort.append(b)
+        cohort.append(new)
     if return_as=='list':
         print('List might cointain duplicates')
+        cohort = [item for sublist in cohort for item in sublist]
         return cohort
     elif return_as=='set':
         cohort = [item for sublist in cohort for item in sublist]
-        return cohort
+        return set(cohort)
     elif return_as =='dict':
         cohort = dict(zip(cohort_years, cohort))
         return cohort

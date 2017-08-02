@@ -68,6 +68,6 @@ def get_ids(df, id_col='pid', contains=None, query=None, out='set', **kwargs):
             combined = np.logical_or(combined, np.array(contains))
         df=df[combined]
         
-    ids = set(df[idcol])
+    ids = set(df[id_col])
          
     return ids
