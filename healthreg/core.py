@@ -29,15 +29,6 @@ def first_event(self, id_col, date_col, groupby = [], return_as = 'series'):
     return first
 
 
-ibd = ['K50, K51']
-
-contains = {'icdmain': ibdlist, 'icdbi':ibdlist}
-
-contains = {('icdmain', 'icdbi'): ibdlist}
-
-config f, arg
-
-default.id_col = 'pid'
 
 #%%
 
