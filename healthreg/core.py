@@ -33,7 +33,7 @@ def first_event(self, id_col, date_col, groupby = [], return_as = 'series'):
 #%%
 
 def get_ids(df, id_col='pid', contains=None, query=None, out='set', **kwargs):
-        """
+    """
         Gets the ids that satisfy some conditions
                 
         Parameters
