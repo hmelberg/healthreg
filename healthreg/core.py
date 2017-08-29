@@ -634,16 +634,6 @@ def read_hdf_using_ids(file_keys,
 
 
 
-def find_ids_and_read_hdq(
-        file_keys,
-        id_col='pid', 
-        schema={'pid': ['pid']}, 
-        find=None,
-        query=None, 
-        dtype=None,
-        **kwargs):
-
-
 
 
 #%%
