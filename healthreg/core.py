@@ -1,8 +1,12 @@
+
+# imports
+
 import pandas as pd
 import numpy as np
 import os
 import re
 import pickle
+
 
 #%% helper functions
 def _tolist(string_or_list):
@@ -40,8 +44,10 @@ def _check_if_path(path):
         path = [os.getcwd()]
     if type(path) == str:
         path = [path]
-    return path
 
+    if not path[0].endswith('/'):
+        path = [path[0] +'/']        
+    return path
 #%%
 def extract_filename(file, ignore_path=True, ignore_format=True):
     """ Extracts filename from a string
@@ -84,17 +90,16 @@ def get_vars(files=None):
 
 def get_dtypes(files=None):
     files=_tolist(files)
-    dtypes = {}
+    datatypes = {}
     for i, file in enumerate(files):
         tmp = pd.read_csv(file, nrows = 5, header = 0) 
-        variables[file] = tmp.columns.tolist()
+        #variables[file] = tmp.columns.tolist()
         datatypes[file] = tmp.dtypes.tolist()
     return datatypes
 
 def get_nfirst(files=None, n=5):
     files=_tolist(files)
     nfirst = {}
-    datatypes = {}
     for i, file in enumerate(files):
         nfirst[file] = pd.read_csv(file, nrows=n, header=0)
     return nfirst
@@ -102,8 +107,7 @@ def get_nfirst(files=None, n=5):
 # Rewrite this (Very inefficient and may cause errors if n is larger than rows in file)        
 def get_nlast(files=None, n=5):
     files=_tolist(files)
-    top = {}
-    datatypes = {}
+    nlast={}
     for i, file in enumerate(files):
         tmp = pd.read_csv(file, header=0) #what if no header
         nlast[file] = tmp.tail(5)
@@ -124,13 +128,18 @@ def explore(files=None, rows=5):
 
 
 #%%
-def get_filelist(path=None, starts_with=None, ends_with=None, contains=None, 
-              subpaths=False, 
-              strip_folders=False, 
-              strip_file_formats=False,
-              regexp=None, 
-              only_filename=False):
-    """ Returns a list of files in a path 
+def get_filelist(path=None, 
+                 starts_with=None, 
+                 ends_with=None, 
+                 contains=None, 
+                 subpaths=False, 
+                 strip_folders=False, 
+                 strip_file_formats=False,
+                 regexp=None, 
+                 only_filename=False):
+    
+    """ 
+    Returns a list of files  
     
     
     parameters
@@ -168,7 +177,6 @@ def get_filelist(path=None, starts_with=None, ends_with=None, contains=None,
     all_files = []
 
     for folder in path:
-        print(folder)
         # include subdirectories if subpaths is True            
         if subpaths: 
             files = [x[0] for x in os.walk(folder)]
@@ -176,7 +184,7 @@ def get_filelist(path=None, starts_with=None, ends_with=None, contains=None,
             files = os.listdir(folder)
         
         # include only files that satisfy given criteria
-        files = select_files(files=files, 
+        files = select_from_filelist(files=files, 
                              starts_with=starts_with, 
                              ends_with=ends_with, 
                              contains=contains, 
@@ -185,9 +193,9 @@ def get_filelist(path=None, starts_with=None, ends_with=None, contains=None,
         
         # make list of all files
         full_files = [folder+file for file in files]
-        print(full_files)
+        
         all_files.append(full_files)
-        print(all_files)
+        
     return all_files[0] #check if this works with multiple dirs
     
 #%%
@@ -257,18 +265,19 @@ def select_from_filelist(files,
         if contains:
             files = [file for file in files if contains in file]
         if regexp:
-            regxpr=re.complie(regexpr)
+            regxpr=re.complie(regexp)
             files = [file for file in files if regxpr.search(file) is not None]             
     return files
       
 
 #%%
-def ids_from_csv(files, 
+def ids_from_csv(files,
+                 find,
                  id_col='pid', 
                  schema={'pid': ['pid']}, 
-                 find=None, 
                  query=None, 
                  dtype=None,
+                 union=False,
                  **kwargs):
     """
     Get set of ids from rows that satisfy some conditions in a list of csv files
@@ -299,11 +308,14 @@ def ids_from_csv(files,
         query: (string) 
             Text specifying a query. 
             Example: query = "age > 18"
+            
+        union: (bool, default: False)
+            If True, returns a single set of the union of all ids
         
                                       
     Example
     -------
-    Get ids for indidivuals who have K50 or K51 in the column icd_main:
+    Get ids for indidiuals who have K50 or K51 in the column icd_main:
     
     >>>ibd_codes = {'icd_main': ['K50, K51']}       
     >>>ids_from_csv(df, id_col='pid' find=ibd_codes)
@@ -315,79 +327,7 @@ def ids_from_csv(files,
     """
     
     old_to_new = _invert(schema)
-    original_cols= old_to_new.keys()
-    
-    
-    oldvars = {var for varlist in schema.values() for var in varlist}
-    
-    files=_tolist(files)
-    ids={}
-    
-    for file in files:
-        header = pd.read_csv(file, nrows=0)
-        header = set(header.columns)
-        usecols = header.intersection(oldvars)
-        df = pd.read_csv(file, usecols=usecols, dtype=dtype)
-        df = df.rename(columns=old_to_new)                     
-        idset = ids_from_df(df=df, id_col=id_col, find=find, query=query, **kwargs)
-        ids[file] = idset   
-        
-    return ids
-#%%
-def ids_from_csv(files, 
-                 id_col='pid', 
-                 schema={'pid': ['pid']}, 
-                 find=None, 
-                 query=None, 
-                 dtype=None,
-                 **kwargs):
-    """
-    Get set of ids from rows that satisfy some conditions in a list of csv files
-            
-    Parameters
-    ----------
-        files: (list) List of files to include
-        
-        id_col: (string) Column name containing the ids
-        
-        schema: (dictionary) 
-            A mapping of desired column names (keys) to the equivalent and 
-            possible diverse column names in the various files. 
-
-            Example: The columns with id and year information may have 
-            different names in different files and we want to label 
-            all the id columns "pid" and similarly for 'year':
-                
-                schema={'pid'  : ['id', 'ID', 'person'], 
-                        'year' : ['jahre', 'year', 'yyyy']}
-                
-        find: (dictionary) 
-            Key is column name to search, 
-            Value is list of strings to search for
-            
-            Example: find = {'icd_main': ['K50, K51']}
-        
-        query: (string) 
-            Text specifying a query. 
-            Example: query = "age > 18"
-        
-                                      
-    Example
-    -------
-    Get ids for indidivuals who have K50 or K51 in the column icd_main:
-    
-    >>>ibd_codes = {'icd_main': ['K50, K51']}       
-    >>>ids_from_csv(df, id_col='pid' find=ibd_codes)
-    
-
-    Returns
-    -------
-        dictionary with files as keys and a set of ids as values
-    """
-    
-    old_to_new = _invert(schema)
-    original_cols= old_to_new.keys()
-    
+    #original_cols= old_to_new.keys()
     
     oldvars = {var for varlist in schema.values() for var in varlist}
     
@@ -395,6 +335,7 @@ def ids_from_csv(files,
     ids={}
     
     for file in files:
+        print(file)
         header = pd.read_csv(file, nrows=0)
         header = set(header.columns)
         usecols = header.intersection(oldvars)
@@ -402,6 +343,10 @@ def ids_from_csv(files,
         df = df.rename(columns=old_to_new)                     
         idset = ids_from_df(df=df, id_col=id_col, find=find, query=query, **kwargs)
         ids[file] = idset   
+    
+    if union:
+        ids = set.union(*ids.values())
+        #alternatively a dict with all the same values for the filekeys
         
     return ids
 #%%
@@ -422,8 +367,8 @@ def ids_from_df(df, id_col='pid', find=None, query=None, **kwargs):
         -------
         Get all ids for peole who have K50 or K51 in the column icd_main:
         
-        >>>contains = {'icd_main': ['K50, K51']}       
-        >>>get_ids(df, id_col='pid', contains=None, query=None, out='set', **kwargs)
+        >>>find = {'icd_main': ['K50, K51']}       
+        >>>ids_from_df(df, id_col='pid', find=None, query=None, out='set', **kwargs)
         
         Returns
         -------
@@ -434,7 +379,7 @@ def ids_from_df(df, id_col='pid', find=None, query=None, **kwargs):
         df = df.query(query)
         
     if find:
-        #boolean array, starintg point: all false, no rows are included
+        #boolean array, staring point: all false, no rows are included
         combined=np.array([False] * len(df))
         
         for var, searchlist in find.items():
@@ -462,8 +407,9 @@ def read_csv_using_ids(files,
     files: list
         list of csv files to read
         
-    ids: dict
-        a dict with the ids of the rows to be included
+    ids: set or dict
+        if set: use same set of ids to read all files
+        if dict: key is file, values is set of ids to include for the file
            
     schema : dict (with lists of columns as values)
         keys are the desired column names that corresponod to the list of columns names in values
@@ -471,43 +417,31 @@ def read_csv_using_ids(files,
             A schema to so specify that files named 'person' 'number' and 'id' in the different csv files contain the same information and should be labelled 'pid:
             {'pid' : ['person', number', 'id']}
                     
-    id_col= str (default is 'pid')
+    id_col: str (default is 'pid')
         the column name that containts information about id (column names from the schema)
         
-    columns= List
+    columns: List
         the columns in the files to be read (column names from the schema)
   
     select: string
         additional query to limit the result
         example: query='female==1'
          
-    dtype=dictionary of dtypes (column names from the schema)
+    dtype:dictionary of dtypes (column names from the schema)
         speficy the dtypes of the columns
     
-    
-    
     """
-    
+    print('hello')
     files=_tolist(files)
     dfs=[]
-    
-    # allow user to input a list of ids (instead of dicts with 
-    # separate ids sets for every (file, key) combination
-    #
-    # if it is a list, every items read use the same ids
-    # useful shortcut when ids are connected and unique across files
-    
-    if isinstance(ids, list):
-        for file, keys in file_keys.items():
-            for key in keys:
-                ids[(file, key)] = ids
-    
+        
     if schema:
         oldvars = {var for varlist in schema.values() for var in varlist}
         old_to_new = dict( (v,k) for k in schema for v in schema[k] )
-    
+        
     for file in files:
-        header = pd.read_csv(file, nrows=0)
+        print(file)
+        header = pd.read_csv(file, nrows=0, encoding='latin-1')
         header = set(header.columns)
         
         # is columns are specified, use this, if not, use all columns 
@@ -520,12 +454,16 @@ def read_csv_using_ids(files,
         else:
             use_columns = header
         
-        df = pd.read_csv(file, usecols=use_columns)
+        df = pd.read_csv(file, usecols=use_columns, encoding='latin-1')
         
         if schema:
             df = df.rename(columns=old_to_new)
         
-        df = df[df[id_col].isin(ids[file])]
+        # allow user to input a single id set/list that applies to all files
+        if (isinstance(ids, set)) or (isinstance(ids, list)):
+            df = df[df[id_col].isin(ids)]
+        else:
+            df = df[df[id_col].isin(ids[file])]
      
         if select:
             df = df.query(select)

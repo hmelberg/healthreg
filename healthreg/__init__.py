@@ -1,1 +1,1 @@
-from .core.py import *
+from .core import *
