@@ -273,8 +273,9 @@ def select_from_filelist(files,
 #%%
 def ids_from_csv(files,
                  find,
-                 id_col='pid', 
-                 schema={'pid': ['pid']}, 
+                 col_info = {'single': ['icdmain'], 'multi': ['icdbi']},
+                 id_col='pid',
+                 schema={'pid': ['pid']},
                  query=None, 
                  dtype=None,
                  union=False,
@@ -387,7 +388,13 @@ def ids_from_df(df, id_col='pid', find=None, query=None, **kwargs):
             true_if_found = df[var].str.contains(searchstr, na=False)
             combined = np.logical_or(combined, np.array(true_if_found))
         df=df[combined]
-        
+        #potentially better way if we know single item columns
+        #not finished code
+#        if col_regex=True:
+#                sing_item_cols = df.filter(regex=col_regex, axis=1)
+#        mask = df[sing_item_cols].isin(searchlist)
+#        true_if_found = mask.any
+#        
     ids = set(df[id_col])
          
     return ids
@@ -431,7 +438,7 @@ def read_csv_using_ids(files,
         speficy the dtypes of the columns
     
     """
-    print('hello')
+    
     files=_tolist(files)
     dfs=[]
         
@@ -662,13 +669,24 @@ def event_aggregator(
         return
 
 
-def first_event(self, id_col, date_col, groupby = [], return_as = 'series'):
+#%%
+def first_event_exact(df, 
+                          find, 
+                          search_cols, 
+                          date_col='in_date',
+                          id_col='pid',
+                          groupby=[],
+                          contains=False,
+                          query = None,
+                          out = 'series'):
     """
         Returns time of the first observation for the person
         
         PARAMETERS
         ----------
-            id_col: (string) Patient identifier
+        find: (string or list of strings)
+            
+        id_col: (string) Patient identifier
             date_col: (string) 
             groupby: (list)
             return_as: ('series' or 'dict', default: 'series')
@@ -682,12 +700,33 @@ def first_event(self, id_col, date_col, groupby = [], return_as = 'series'):
         
         Returns
             Pandas dataframe or a dictionary
-            
-        
+                 
     """
-    groupby.append(id_col)
-    first = self.sort_values([id_col, date_col]).groupby(groupby)[date_col].first()
-    if return_as=='dict':
-        first = first.to_dict()
     
-    return first
+    if query:
+        df=df.query(query)
+    
+    search_cols = _tolist(search_cols)
+    find=_tolist(find)
+    
+    booldf = df[search_cols].isin([find])
+    boolseries = booldf.any(axis=1).values
+    
+    mindate = df[boolseries].groupby(groupby)[date_col].min()
+
+    if out=='series':
+        return mindate    
+
+    if out=='dict':
+        return mindate.to_dict()
+    
+    else:
+        print("The argument for 'out' is wrong.")
+
+#%%
+
+
+
+
+
+
