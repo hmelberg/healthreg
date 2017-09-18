@@ -1,6 +1,6 @@
-def first_event(df, search_col, find,id_col = 'pid', date_col='in_date'):
+def first_event(self, id_col, date_col, groupby = [], return_as = 'series'):
     """
-        Returns time of the first observation for the person based on certain 
+        Returns time of the first observation for the person
         
         PARAMETERS
         ----------
@@ -21,23 +21,9 @@ def first_event(df, search_col, find,id_col = 'pid', date_col='in_date'):
             
         
     """
-      
-    b = np.full(len(df),False)
-
-    for col in search_col:
-        for code in find:
-            a = df[col].str.contains(code,na=False).values
-            b = b|a
+    groupby.append(id_col)
+    first = self.sort_values([id_col, date_col]).groupby(groupby)[date_col].first()
+    if return_as=='dict':
+        first = first.to_dict()
     
-    return df[b].groupby(id_col)[date_col].min()
-
-
-first_event(df,search_col = ['bio','procedure_codes'],find = ['JHJ','infli','WMG'])
-
-   
-    
-    
-df[['k50','k51']].isin([1,2])
-
-df[['k50','k51']].isin([1,2]) == df[id_col].isin(find)
-
+    return first
