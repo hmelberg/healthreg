@@ -1248,10 +1248,38 @@ def years_apart(df, pid='pid', year='year'):
     return b
 
 #%%
-def count_codes(df, codes=None, cols=None, sep=None, strip=True, lower_case=False, normalize=False):
+def label(df, labels=None, read=True, path=None):
+    """
+    Translate codes in index to text labels based on content of the dict labels
+    
+    Args:
+        labels (dict): dictionary from codes to text
+        read (bool): read and use internal dictionary if no dictionary is provided
+    """
+    if not labels:
+        # making life easier for myself
+        try:
+            labels=read_code2text()
+        except:
+            labels=read_code2text(path)
+    df = df.rename(index=labels)
+    return df
+
+#%%  
+
+def count_codes(df, codes=None, cols=None, sep=None, strip=True, ignore_case=False, normalize=False, ascending=False):
     """
     Count frequency of values in multiple columns or columns with seperators
     
+    Args:
+        codes (str, list of str, dict): codes to be counted
+        cols (str or list of str): columns where codes are
+        sep (str): separator if multiple codes in cells
+        strip (bool): strip spacec bore and after code before counting
+        ignore_case (bool): determine if codes with same characters, 
+            but different cases should be the same
+        normalize (bool): If True, outputs percentages and not absolute numbers        
+        
     allows 
         - star notation in codes and columns
         - values in cells with multiple valules can be separated (if sep is defined)
@@ -1276,9 +1304,7 @@ def count_codes(df, codes=None, cols=None, sep=None, strip=True, lower_case=Fals
     count_codes(df, codes={'Z51*':'stråling'}, cols=['icdmain', 'icdbi'], sep=',')
     """
     # count all if codes is codes is not specified
-    # use all columns if col is not specified
-    
-    
+    # use all columns if col is not specified 
     if codes: 
         codes=listify(codes)
     
@@ -1324,7 +1350,13 @@ def count_codes(df, codes=None, cols=None, sep=None, strip=True, lower_case=Fals
         replace=expand_replace(df=df, replace=replace, cols=cols, sep=sep, strip=strip)
 
         code_count=code_count.rename(index=replace).groupby(level=0).sum()
-
+    
+    if ascending:
+        code_count = code_count.sort_values(ascending=True)
+    else:
+        code_count = code_count.sort_values(ascending=False)
+        
+    
     return code_count                 
 
 
@@ -1877,16 +1909,15 @@ def clean(df, rename=None,
 # pandas_flavor: good, but want to eliminate dependencies
 # approach below may be bloated and harder to maintain 
 # (must change when method names change)
-series_methods =[count_persons, unique_codes, extract_codes, count_codes] 
+series_methods =[count_persons, unique_codes, extract_codes, count_codes, label] 
 
 frame_methods = [sample_persons, first_event, get_pids, unique_codes, 
                  expand_codes, get_rows, count_persons, stringify, 
-                 extract_codes, count_codes]
+                 extract_codes, count_codes, label]
+
 # probably a horrible way of doing something horible!
 for method in frame_methods:
     setattr(pd.DataFrame, getattr(method, "__name__"), method)
 
 for method in series_methods:
     setattr(pd.Series, getattr(method, "__name__"), method)
-
-    
