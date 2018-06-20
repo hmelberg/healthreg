@@ -260,7 +260,8 @@ def stringify(df,
 def expand_codes(df,
           codes=None, 
           cols=None,
-          sep=None):
+          sep=None,
+          codebook=None):
     """
     Returns all the unique terms in the columns that match codes
     
@@ -270,21 +271,24 @@ def expand_codes(df,
             codes=expand_codes(df=df, codes=['H02*'], cols='atc')
     
     """
+        
     if isinstance(codes, dict):
         codes=list(codes.keys())
         
     codes=listify(codes)
     cols=listify(cols)
-
-        
+    
+    if codebook:
+        unique_words = set(codebook)  
+    else:
+        unique_words=unique_codes(df=df, cols=cols, sep=sep)
+    
     #expand only if there is something to expand
     if '*' not in ''.join(codes):
-        return codes # returns like this may not pass a smell test?
+        matches = set(codes) & unique_words
     
     else:
         matches=set()
-        
-        unique_words=unique_codes(df=df, cols=cols, sep=sep) 
         
         for find in codes:    
             start_words=end_words=contain_words=set(unique_words)
@@ -442,7 +446,9 @@ def count_persons(df, codes=None, cols=None, pid='pid', sep=None, normalize=Fals
     subset=df[rows].set_index(pid)
     #subset=df[rows]
     
-    
+    if not replace:
+        replace=codes
+        
     code_df=extract_codes(df=subset, codes=replace, cols=cols, sep=sep)
     labels=list(code_df.columns)  
     
@@ -1138,7 +1144,7 @@ def extract_codes(df, codes, cols, sep=None, new_sep=',', na_rep='',
     """
     Produce one or more columns with only selected codes
     
-    Can produce a set of dummy columns for codes (and code groups).
+    Can produce a set of dummy columns for codes and code groups.
     Can also produce a merged column with only extracted codes.
     Accept star notation.
     Also accepts both single value columns and columns with compund codes and seperators
@@ -1868,6 +1874,158 @@ def get_cleaner(name):
     return cleaner
 
 #%%
+def charlson(df, cols=None, sep=None, dot_notation=False):
+    """
+    
+    Reference:
+        http://isocentre.wikidot.com/data:charlson-s-comorbidity-index
+    
+    a=charlson(df=df, cols=['icdmain', 'icdbi'], sep=',', dot_notation=False)
+    
+    """
+    infarct = 'I21* I22* I25.2'.split()
+    heart = 'I09.9 I11.0 I13.0, I13.2 I25.5 I42.0 I42.5-I42.9 I43* I50* P29.0'.split()
+    vascular = '70* I71* I73.1 I73.8 I73.9 I77.1 I79.0 I79.2 K55.1 K55.8 K55.9 Z95.8 Z95.9'.split()
+    cerebro = 'G45* G46* H34.0 I60* I69*'.split()
+    dementia	= 'F00* F03* F05.1 G30* G31.1'.split()
+    pulmonary = 'I27.8 I27.9 J40* J47* J60* J67* J68.4, J70.1, J70.3'.split()
+    tissue = 'M05* M06* M31.5 M32* M34* M35.1, M35.3 M36.0'.split()
+    ulcer = 	['K25*-K28*']
+    liver = 	'B18* K70.0-K70.3 K70.9 K71.3-K71.5 K71.7 K73* K74* K76.0 K76.2-K76.4 K76.8 K76.9 Z94.4'.split()
+    diabetes =	['E10.0', 'E10.l', 'E10.6', 'E10.8', 'E10.9', 'E11.0', 'E11.1', 'E11.6', 'E11.8', 'E11.9', 'E12.0', 'E12.1', 'El2.6', 'E12.8', 'El2.9', 'E13.0', 'E13.1', 'E13.6', 'E13.8', 'E13.9', 'E14.0', 'E14.1', 'E14.6', 'E14.8', 'E14.9']
+    hemiplegia = 	 ['G04.1', 'G11.4', 'G80.1', 'G80.2', 'G81*', 'G82*', 'G83.0-G83.4', 'G83.9']
+    renal = 	['I12.0', 'I13.1', 'N03.2-N03.7', 'N05.2-N05.7', 'N18*', 'N19*', 'N25.0', 'Z49.0-Z49.2', 'Z94.0', 'Z99.2']
+    dorgan = ['E10.2','E10.3','E10.4', 'E10.5', 'E10.7', 'E11.2', 'E11.5', 'E11.7', 'E12.2', 'E12.3', 'E12.4', 'E12.5', 'E12.7','E13.2','E13.3', 'E13.4', 'E13.5', 'E13.7', 'E14.2','E14.3', 'E14.4', 'E14.5', 'E14.7']
+    tumor	=['C00*-C26*', 'C30*-C34*', 'C37*-41*', 'C43*-C45*', 'C58*-C60*', 'C76*-C81*', 'C85*-C88*', 'C90*-C97*']
+    sliver =  ['I85.0', 'I85.9', 'I86.4', 'I98.2', 'K70.4', 'K71.1', 'K72.1', 'K72.9', 'K76.5', 'K76.6', 'K76.7']
+    mtumor = 	['C77*','C78*','C79*','C80*']
+    hiv = 	['B20*', 'B21*', 'B22*', 'B24']
+
+    points = {
+        'infarct' : 1,
+        'heart' : 1,
+        'vascular' : 1,
+        'cerebro' : 1,
+        'dementia' : 1,
+        'pulmonary' : 1,
+        'tissue' : 1,
+        'ulcer' : 	1,
+        'liver' : 	1,
+        'diabetes' :	1,
+        'hemiplegia' : 	2,
+        'renal' : 	2,
+        'dorgan' : 2,
+        'tumor'	:2,
+        'sliver' :  3,
+        'mtumor' : 	6,
+        'hiv' : 	6}
+    
+    disease_labels = list(points.keys())
+    
+    diseases= [
+        infarct  ,
+        heart  ,
+        vascular  ,
+        cerebro  ,
+        dementia  ,
+        pulmonary  ,
+        tissue  ,
+        ulcer  	,
+        liver  	,
+        diabetes 	,
+        hemiplegia  	,
+        renal  	,
+        dorgan  ,
+        tumor	,
+        sliver   ,
+        mtumor  	,
+        hiv  	]
+    
+    disease_codes={}
+    for i, disease in enumerate(diseases):
+        all_codes=[]
+        disease_str=disease_labels[i]
+        for code in disease:
+            expanded_codes = expand_hyphen(code)
+            all_codes.extend(expanded_codes)
+        disease_codes[disease_str] = all_codes
+    
+    expanded_disease_codes = {}  
+    no_dot_disease_codes={}
+    
+    if not dot_notation:
+        for disease, codes in disease_codes.items():
+            new_codes = [code.replace('.','') for code in codes]
+            no_dot_disease_codes[disease] = new_codes
+        disease_codes = no_dot_disease_codes
+    
+    all_codes = unique_codes(df=df, cols=cols, sep=sep)          
+    
+    for disease, codes in disease_codes.items():
+        expanded_disease_codes[disease] = expand_codes(df=df, codes=codes, cols=cols, sep=sep, codebook=all_codes)
+    
+    return expanded_disease_codes
+
+
+#%%
+
+def expand_hyphen(expr):
+    """
+    Example: Expands ('b01A-b04A') to ['b01A' ,'b02A', 'b03A', 'b04A']
+    
+    Args:
+        code
+        
+    Returns:
+        
+    Examples:
+        expand_hyphen('b01.1*-b09.9*')
+        expand_hyphen('n02.2-n02.7')  
+        expand_hyphen('c00*-c260') 
+        expand_hyphen('b01-b09')
+        expand_hyphen('b001.1*-b009.9*')
+    
+    Note:
+        decimal expression also works: expr = 'n02.2-n02.7'
+        expr = 'b01*-b09*'
+        expr = 'C00*-C26*'
+    Todo:
+        expr = 'n00002667600.2-n05.7'
+        expr = 'b001.1*-b009.9*'
+    """
+    if '-' in expr:
+        lower, upper = expr.split('-')
+        lower_str = re.search("[-+]?\d*\.\d+|\d+", lower).group()
+        upper_str = re.search("[-+]?\d*\.\d+|\d+", upper).group()
+        
+        lower_num = float(lower_str)
+        upper_num = float(upper_str)
+       
+        #leading_nulls = len(lower_str) - len(lower_str.lstrip('0'))
+        length = len(lower_str)
+        
+        # must use integers in a loop, not floats
+        if '.' in lower_str:
+            decimals = len(lower_str.split('.')[1])
+            multiplier = 10*decimals
+        else:
+            multiplier=1
+               
+        no_dec_lower = int(lower_num*multiplier)
+        no_dec_upper = int((upper_num)*multiplier)+1
+        
+        if '.' in lower_str:
+            codes = [lower.replace(lower_str, str(num/multiplier).zfill(length)) for num in range(no_dec_lower, no_dec_upper)]
+        else:
+            codes = [lower.replace(lower_str, str(num).zfill(length)) for num in range(no_dec_lower, no_dec_upper)]
+
+            
+    else:
+        codes = [expr]
+    return codes
+
+#%%
+
 
 def clean(df, rename=None, 
               dates=None, 
