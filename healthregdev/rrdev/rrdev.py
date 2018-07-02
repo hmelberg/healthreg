@@ -98,15 +98,15 @@ def incidence(df, codes=None, cols=None, sep=None, pid='pid',
         sub=df[rows]
 
     for name, codelist in codes.items():  
-        rows=get_rows(df=df, codes=codelist, cols=cols, sep=sep, _fix=False)
-        sub=df[rows]
+        rows=get_rows(df=sub, codes=codelist, cols=cols, sep=sep, _fix=False)
+        sub=sub[rows]
         events = sub.groupby(pid).size()
         sub=sub[events>=min_events]
     
 
         if within_period:
             days_to_next = (sub.sort_values([pid, date]).groupby(pid)[date]
-                                                            .diff(periods=-min_events)
+                                                            .diff(periods=-(min_events-1))
                                                             .dt.days)
                                                             
             #note: to be generalized? 
@@ -120,15 +120,11 @@ def incidence(df, codes=None, cols=None, sep=None, pid='pid',
             # for instance: disease group, if it is based on calc that changes 
             # as obs are eliminated because of within_period requirements?
             # eg. disease group categorization based on majority of codes being x
-        
-        events_per_person = sub.groupby(pid).size()
-        enough_events = events_per_person>= min_events
-        pids = enough_events.index[enough_events] 
-        
+
         if groupby:
-            incidence_df = sub[sub.pid.isin(pids)].groupby(groupby)[pid].nunique()
+            incidence_df = sub.groupby(groupby)[pid].nunique()
         else:
-            incidence_df = sub[sub.pid.isin(pids)][pid].nunique()
+            incidence_df = sub[pid].nunique()
             
             
         incidence_list.append(incidence_df)
@@ -141,6 +137,83 @@ def incidence(df, codes=None, cols=None, sep=None, pid='pid',
         incidence_df=incidence_df.squeeze()
         
     return incidence_df
+
+
+#%%
+def make_cohort(df, codes=None, cols=None, sep=None, pid='pid', 
+                     date='indate', min_events=1, within_period=None, _fix=True):
+    """ 
+    The first year with a given code given conditions
+    
+    
+    Args:
+        df (dataframe): Dataframe with events, dates and medical codes
+        
+        codes (string, list or dict): The codes for the disease
+        
+        cols (string, list): Name of cols where codes are located
+        
+        pid (str): Name of column with the personal identification number
+        
+        date (str): Name of column with the dates for the events 
+            (the dtype of the column must be datetime)
+        
+        min_events (int): Number of events with the codes required for inclusion
+        
+        within_period (int): The number of events have to occurr within a period (measured in days) before the person is included
+            For instance: min_events=2 and within_period=365 means
+            that a person has to have two events within one year
+            in order to be included in the calculation of incidence.
+        
+        
+        Returns: 
+            Series (For instance, number of new patients every year)
+        
+        Examples:
+            df['cohort']=df.groupby('pid').start_date.min().dt.year
+            
+            make_cohort(df, codes=['K50*', 'K51*'], cols=['icdmain', 'icdbi'], sep=',', pid='pid', date='start_date')
+            
+            make_cohort(df, codes={'cd':'K50*', 'uc':'K51*'}, cols=['icdmain', 'icdbi'], sep=',', pid='pid', date='start_date')
+            
+        todo:
+            make cohort variable redundant ... already have date!
+            make it possible to do monthly, quarterly etc incidence?        
+    """
+    
+    sub=df
+    
+    if _fix:
+        codes, cols, allcodes=fix_args(df=df, codes=codes, cols=cols, sep=sep, merge=True, group=False)     
+        rows=get_rows(df=df, codes=allcodes, cols=cols, sep=sep, _fix=False)
+        sub=df[rows]
+
+    cohorts=[]
+    names=[]
+    
+    for name, codelist in codes.items():  
+        rows=get_rows(df=sub, codes=codelist, cols=cols, sep=sep, _fix=False)
+        sub2=sub[rows]
+        events = sub2.groupby(pid).size()
+        pids= events.index[events>=min_events]
+        sub2 = sub2[sub2[pid].isin(pids)]
+ 
+        if within_period:
+            days_to_next = (sub2.sort_values([pid, date]).groupby(pid)[date]
+                                                            .diff(periods=-(min_events-1))
+                                                            .dt.days)
+                                                            
+            inside = (days_to_next >= -within_period)
+            sub2=sub2[inside]
+    
+        cohort=sub2.groupby(pid)[date].min().dt.year 
+        cohorts.append(cohort)
+        names.append(name)
+    
+    cohorts=pd.concat(cohorts, axis=1)
+    cohorts.columns=names
+        
+    return cohorts
 
 
 #%%
