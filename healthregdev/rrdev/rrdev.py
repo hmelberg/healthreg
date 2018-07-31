@@ -232,7 +232,6 @@ def test_make_cohort():
         """
         
     a=StringIO(a)
-    df2=pd.read_csv(a)
     
     assert len(make_cohort(df=df, codes={'ibd': ['K50*', 'K51*']}, 
                           cols=['icdmain', 'icdbi'],
@@ -254,7 +253,7 @@ def test_make_cohort():
 #%%
 def sample_persons(df, pid='pid', n=None, frac=0.1):
     """
-    Picks some (randomly selected) individuals and all their observations
+    Picks some (randomly selected) individuals and ALL their observations
     
     
     Args:
@@ -273,14 +272,22 @@ def sample_persons(df, pid='pid', n=None, frac=0.1):
 
     
     """
-        
-    ids=df[pid].unique()
+    if isinstance(df, pd.Series):
+        ids=df.index.nunique()
+    else:
+        ids=df[pid].unique()
     
     if not n:
         n=int(frac*len(ids))
     
+    
     new_ids=np.random.choice(ids, size=n)
-    new_sample = df[df.pid.isin(new_ids)]
+    
+    if isinstance(df, pd.Series):
+        new_sample = df[ids]
+    else:
+        new_sample = df[df.pid.isin(new_ids)]
+    
     return new_sample
 
 
@@ -299,25 +306,69 @@ def get_ids(df, codes, cols, groupby, pid='pid', out=None, sep=None):
     return grouped_ids
 
 #%%
-def sniff_sep(df, cols=None, sep=',', n=1000, full_certainty=False):
+def sniff_sep(df, cols=None, possible_seps=[',', ';', '|'], n=1000, sure=False, each_col=False):
+    """
+    Sniff whether column(s) cells have mulitple values with a seperator
+    
+    Args:
+        df: dataframe or series
+        cols (str or list of str): name of columns to be checked
+        possible_seps (list of str): list of potential seperators to check for
+        n (int, default = 1000): number of rows from tail and head to check
+        sure (bool, default False): Set to True to check all rows
+        each_col (bool, default False): Set to True to get a dict with the seperator (and whether it exists) for each column
+    
+    Return:
+        Str, None or dict (of str or None)
+        Returns the seperator if it is found, or None if no seperator is found
+        If each_col is True, returns a dict with the sep (or None) for each column
+        
+    """
 
     cols=listify(cols)
     
+    # fix args depending on whther a series or df is input and if cols is specified
+    if isinstance(df, pd.Series):
+        df=pd.DataFrame(df)
+        cols=list(df.columns)
+    else:
+        if not cols:
+            cols=list(df.columns)    
+    
+    sep_col={}
     for col in cols:
-        if full_certainty:
+        if sure:
             n=len(df.dropna())
     
-        if n<100:
+        if n<1000:
             n=len(df.dronna())
+
+        search_head = df[col].dropna().head(n).str.cat()
+        search_tail = df[col].dropna().head(n).str.cat()
         
-        if (sep in df[col].dropna().head(n).str.cat() 
-                    or 
-            sep in df[col].dropna().tail(n).str.cat()):
-            sep=sep
+        # check for existence of all seps
+        for sep in possible_seps:
+            if (sep in search_head) or (sep in search_tail):
+                sniffed_sep=sep
+                break
+            else:
+                sniffed_sep=None
+        # don't check more columnsif found sep in one
+        if sniffed_sep and not each_col:
             break
-    else:
-        sep=None
-    return sep
+        
+        # go on to check each col if each_col is specified
+        if each_col:
+            sep_col[col]=sniffed_sep
+
+    if each_col:
+        sniffed_sep=sep_col
+        
+    return sniffed_sep
+
+setattr(pd.Series, getattr(sniff_sep, "__name__"), sniff_sep)
+setattr(pd.DataFrame, getattr(sniff_sep, "__name__"), sniff_sep)
+
 
 #%%
 def unique_codes(df,
@@ -361,7 +412,6 @@ def unique_codes(df,
     if _fix:
         df, cols = to_df(df=df, cols = cols)
         cols = fix_cols(df=df, cols=cols)
-
         
     unique_terms=set(pd.unique(df[cols].values.ravel('K')))
     #unique_terms={str(term) for term in unique_terms}
@@ -421,11 +471,8 @@ def events(df,
     
     if _fix:
         df, cols = to_df(df, cols)
-        cols=fix_cols(df, cols) 
-        codes = expand_codes(df=df, codes=codes, cols=cols, sep=sep)
-        allcodes=codes
-        
-    
+        codes, cols, allcodes, sep = fix_args(df=df, codes=codes, cols=cols, sep=sep)
+            
     with_codes = get_rows(df=df, codes=allcodes, cols=cols, sep=sep, _fix=False)
     
     pids = df[with_codes][pid].unique()
@@ -735,13 +782,14 @@ def get_rows(df,
         df, cols = to_df(df)
         cols=fix_cols(df=df, cols=cols)
         codes=fix_codes(df=df, codes=codes, cols=cols, sep=sep)
-    
+        
     listify(codes)
     
     allcodes=get_allcodes(codes)
-        
-    # if compound words in a cell    
-    if sep:
+
+    if len(allcodes)==0: # if no relevant codes --> a column with all false
+        b = np.full(len(df),False)
+    elif sep:
         allcodes_regex = '|'.join(allcodes)
         b = np.full(len(df),False)
         for col in cols:
@@ -932,7 +980,7 @@ def fix_args(df, codes=None, cols=None, sep=None, merge=False, group=False, _sni
     cols=expand_cols(df=df, cols=cols)
     
     if _sniffsep:
-        sep=sniff_sep(df=df,cols=cols, sep=',')
+        sep=sniff_sep(df=df,cols=cols)
        
     if not codes:
         codes=count_codes(df=df, cols=cols, sep=sep).sort_values(ascending=False).index[:5]
@@ -1023,7 +1071,7 @@ def count_persons(df, codes=None, cols=None, pid='pid', sep=None,
             any of the specified codes
     
     Examples
-        count_persons(df=df, codes='4AB04', cols='ncmp', sep=',', pid='pid')
+        rr.count_persons(df=npr, codes='4AB04', cols='ncmp')
         
         count_persons(df=df, codes=['4AB*', '4AC*'], cols='ncmp', sep=',', pid='pid')
         
@@ -1090,11 +1138,27 @@ def count_persons(df, codes=None, cols=None, pid='pid', sep=None,
     return counted
 
 #%%
-def get_rows_expression(df, expr, cols=None, sep=None, raw=False, regex=False, logic=True, codebook=None, _fix=True):     
+def use_expression(df, expr, cols=None, sep=None, out='rows', raw=False, regex=False, logic=True, codebook=None, pid='pid', _fix=True):     
     
     """
     expr = 'K52* and not (K50 or K51)'
+    expr = 'K52* in icd and not (K50 or K51) in ncmp'
     
+    expr = 'K52* in icd and not 4AB04 in ncmp or atc'
+    
+    expr = 'in icdmain or icdbi: (k50 or k51) and in ncmp: 4AB04 and 4AB02)'
+   
+    expr = '(K50 in:icdmain1,icdmain2 or K51 in:icdmain1,icdmain2) and (4AB04 in:ncmp or 4AB02 in:ncmp)'
+    
+    expr = 'k50 or k51 in icdmain or icdbi and (4AB04 and 4AB02) in ncmp'
+    expr = 'k50==icdmain
+    expr = 'K51* and 4AB04'
+
+    expands   ... columns connected by logical operators should get expressions in front
+    abode_expr = 'K51* in icdmain and K51* in icdbi ...'
+
+    expr = 'icd==K50 and age==40'
+
     1. pick out every code expression nd expand it? (only star expansion, hyphen would work too? key is to avoud codebook or full lookup )
     2. get codebook (if needed)
     2. use extract coe on each expression
@@ -1102,45 +1166,113 @@ def get_rows_expression(df, expr, cols=None, sep=None, raw=False, regex=False, l
     2. execute logic
     3. return series (bool)
     
+    get_rows_expression(df=npr, expr=expr, cols='icd', sep=',', 
+                        out='rows', raw=False, regex=False, logic=True, 
+                        codebook=None, pid='pid', _fix=True):     
+
     
     """
     cols=listify(cols)
-    
-    df, cols = to_df(df, cols)
-    
-    ## find all whole words used in the text
-        
-    # find all words        
-    words=set(expr.split())
-    words = {word.strip('(').strip(')') for word in words}
-    
     skipwords = {'and', 'or', 'not'}
+    #split_at = {'=', '>', '<'} # what about '>=' '!' '!=' etc
+    #well, just use quert to deal with all this. eg if want to examine age>40
+    #also additional groupbys ... need to think harder/rewrite/clean up, for now: allow some slightly more complex stuff
     
-    if skipwords:
-        words = words - skipwords
+    if _fix:
+        df, cols = to_df(df, cols)
+        if not sep:
+            sep=sniff_sep(df=df, cols=cols)
+        df=df.set_index(pid) # maybe use "if index.name !='pid_index' since indexing may take time
+    
+    # one procedure for expressions with multiple columns (using " in:")
+    # another for expressions within single columns (no " in: ")
+    if " in:" in expr:
+        expr=expr.replace(': ', ':').replace(', ',',')
+        words = expr.split()
+        words = [word.strip('(').strip(')') for word in words if word not in skipwords]
         
-    if not codebook:
-        codebook=unique_codes(df=df, cols=cols, sep=sep)    
-    
-    #must avoid * since eval does not like in in var names, replace * with three ___
-    worddict = {word.replace('*', '___'):[word] for word in words}
-    coldf = pd.DataFrame(index=df.index)       
-    
-    codes=expand_codes(df=df, codes=worddict, cols=cols, sep=sep, codebook=codebook)
+        word_cols = dict(zip(words[0::2], words[1::2]))
         
-    for name, codelist in codes.items():
-        coldf[name]=get_rows(df=df, codes=codelist, cols=cols, sep=sep, _fix=False)
-    
-    evalexpr=expr
-    
-    for word in words:
-        word=word.strip()
-        evalexpr = evalexpr.replace(word, f'{word}==1')
-    
-    evalexpr = evalexpr.replace('*', '___')
+        del_cols = list(word_cols.values())
+        
+        word_cols={word : cols.replace('in:','').split(',') for word, cols in word_cols.items()}
+        
+        
+        coldf = pd.DataFrame(index=df.index)       
+        
+        # if no global codebook is specified:
+        # this create separate codebook for each column(s) condition
+        # background in case some codes overlap (may not be necessary)        
+        # potential problem: empty codebooks?
+        new_codebook={}
+        for word, cols in word_cols.items():
+            name="".join(cols)
+            if not codebook:
+                if name not in new_codebook:
+                    new_codebook[name]=unique_codes(df=df, cols=cols, sep=sep)
+            else:
+                new_codebook[name]=codebook
+        
+        for word, cols in word_cols.items():
+            worddict = {'___' + word.replace('*', '___') : [word]}
+            
+            codes=expand_codes(df=df, codes=worddict, cols=cols, sep=sep, codebook=new_codebook[''.join(cols)], merge=True, group=True)
+            
+            for name, codelist in codes.items(): # works, but really only one item in the dict here
+                coldf[name]=get_rows(df=df, codes=codelist, cols=cols, sep=sep, _fix=False)
 
-    coldf=coldf.fillna(False)
+        evalexpr=expr
+        for col in del_cols:
+            evalexpr=evalexpr.replace(col, '')
+        words=set(word_cols.keys())
+        
+        for word in words:
+            word=word.strip()
+            evalexpr = evalexpr.replace(word, f'___{word}==1')
+        
+        evalexpr = evalexpr.replace('*', '___')
     
+        coldf=coldf.fillna(False)            
+    
+    # if search in same columns for all conditions        
+    else:
+        # find all words        
+        words = expr.split()
+        words = {word.strip('(').strip(')') for word in words}
+                        
+        words=set(words)
+        
+        if skipwords:
+            words = words - skipwords
+            
+        if not codebook:
+            codebook=unique_codes(df=df, cols=cols, sep=sep)    
+        
+        #must avoid * since eval does not like in in var names, replace * with three ___
+        # same with column names starting with digit, sp add three (___) to all words
+        worddict = {'___'+word.replace('*', '___'):[word] for word in words}
+        coldf = pd.DataFrame(index=df.index)       
+        
+        codes=expand_codes(df=df, codes=worddict, cols=cols, sep=sep, codebook=codebook)
+            
+        for name, codelist in codes.items():
+            coldf[name]=get_rows(df=df, codes=codelist, cols=cols, sep=sep, _fix=False)
+        
+        evalexpr=expr
+        
+        for word in words:
+            word=word.strip()
+            evalexpr = evalexpr.replace(word, f'___{word}==1')
+        
+        evalexpr = evalexpr.replace('*', '___')
+    
+        coldf=coldf.fillna(False)
+    
+    # if the expression be evaluated at row level or person level
+    if out=='pids':
+        # cold=coldf.groupby(pid).any()
+        coldf=coldf.any(level=0)
+
     expr_evaluated = coldf.eval(evalexpr)
     
     return expr_evaluated
@@ -2102,17 +2234,17 @@ def count_codes(df, codes=None, cols=None, sep=None, strip=True,
     more examples
     -------------
     
-    count_codes(df, codes='K51*', cols='icdmain', sep=',')
-    count_codes(df, codes='K51*', cols='icdmain', sep=',', group=True)
-    count_codes(df, codes='Z51*', cols=['icdmain', 'icdbi'], sep=',')
+    count_codes(df, codes='K51*', cols='icd', sep=',')
+    count_codes(df, codes='K51*', cols='icdm', sep=',', group=True)
+    count_codes(df, codes='Z51*', cols=['icd', 'icdbi'], sep=',')
     count_codes(df, codes='Z51*', cols=['icdmain', 'icdbi'], sep=',', group=True)
-    count_codes(df, codes={'radiation': 'Z51*'}, cols=['icdmain', 'icdbi'], sep=',')
+    count_codes(df, codes={'radiation': 'Z51*'}, cols=['icd'], sep=',')
     count_codes(df, codes={'radiation': 'Z51*'}, cols=['icdmain', 'icdbi'], sep=',')
     count_codes(df, codes={'crohns': 'K50*', 'uc':'K51*'}, cols=['icdmain', 'icdbi'], sep=',')
     count_codes(df, codes={'crohns': 'K50*', 'uc':'K51*'}, cols=['icdmain', 'icdbi'], sep=',', dropna=True)
     count_codes(df, codes={'crohns': 'K50*', 'uc':'K51*'}, cols=['icdmain', 'icdbi'], sep=',', dropna=False)
     count_codes(df, codes={'crohns': 'K50*', 'uc':'K51*'}, cols=['icdmain', 'icdbi'], sep=',', dropna=False, group=False)
-    count_codes(df, codes=['K50*', 'K51*'], cols=['icdmain', 'icdbi'], sep=',', dropna=False, group=True, merge=False)
+    count_codes(df, codes=['K50*', 'K51*'], cols=['icd'], sep=',', dropna=False, group=True, merge=False)
     count_codes(df, codes=['K50*', 'K51*'], cols=['icdmain', 'icdbi'], sep=',', dropna=False, group=False, merge=False)
     count_codes(df, codes=['K50*', 'K51*'], cols=['icdmain', 'icdbi'], sep=',', dropna=False, group=False, merge=True)
     count_codes(df, codes=['K50*', 'K51*'], cols=['icdmain', 'icdbi'], sep=',', dropna=True, group=True, merge=True)
@@ -2127,18 +2259,19 @@ def count_codes(df, codes=None, cols=None, sep=None, strip=True,
     sub=df
     
     if _fix:
-        df, cols = to_df(df=df, cols=cols)
-        cols = fix_cols(df=df, cols=cols)
-        
+        sub, cols = to_df(df=sub, cols=cols)
+        cols = fix_cols(df=sub, cols=cols)
+        if not sep:
+            sep=sniff_sep(df=sub, cols=cols)
+            
         if codes:
             codes=format_codes(codes=codes, merge=merge)
-            codes=expand_codes(df=df, codes=codes, cols=cols, sep=sep, merge=merge, group=group)
+            codes=expand_codes(df=sub, codes=codes, cols=cols, sep=sep, merge=merge, group=group)
             allcodes=get_allcodes(codes)
             if dropna:
-                rows=get_rows(df=df, codes=allcodes, cols=cols, sep=sep, _fix=False)
-                sub=df[rows]
- 
-            
+                rows=get_rows(df=sub, codes=allcodes, cols=cols, sep=sep, _fix=False)
+                sub=sub[rows]
+                                            
     if sep:
         count_df=[sub[col].str
                       .split(sep, expand=True)
@@ -2167,6 +2300,8 @@ def count_codes(df, codes=None, cols=None, sep=None, strip=True,
     if normalize:
         code_n = code_count.sum()
         code_count = code_count/code_n
+    else:
+        code_count=code_count.astype(int)
 
     if ascending:
         code_count = code_count.sort_values(ascending=True)
@@ -2174,8 +2309,12 @@ def count_codes(df, codes=None, cols=None, sep=None, strip=True,
         code_count = code_count.sort_values(ascending=False)
         
     
-    return code_count                 
+    return code_count  
+               
+setattr(pd.Series, getattr(count_codes, "__name__"), count_codes)
+setattr(pd.DataFrame, getattr(count_codes, "__name__"), count_codes)
 
+    
 #%%
 def find_spikes(df, codes=None, cols=None, sep=None, groups=None, interact=False, _fix=True, threshold=3):
     """
@@ -3130,7 +3269,7 @@ def clean(df, rename=None,
 # pandas_flavor: good, but want to eliminate dependencies
 # approach below may be bloated and harder to maintain 
 # (must change when method names change)
-series_methods =[count_persons, unique_codes, extract_codes, count_codes, label] 
+series_methods =[sample_persons, count_persons, unique_codes, extract_codes, count_codes, label] 
 
 frame_methods = [sample_persons, first_event, get_pids, unique_codes, 
                  expand_codes, get_rows, count_persons, stringify, 

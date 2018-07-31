@@ -12,7 +12,7 @@ import os
 import uuid
 from itertools import chain
 from itertools import zip_longest
-
+from io import StringIO
 
 #%%
 def listify(string_or_list):
@@ -35,48 +35,222 @@ def listify(string_or_list):
         string_or_list = [string_or_list]
     return string_or_list
 #%%
-def incidence(df, codes=None, cols=None, pid='pid', 
+def incidence(df, codes=None, cols=None, sep=None, pid='pid', 
                      date='indate', min_events=1, within_period=None,
-                     groupby='cohort', update_cohort=True) :
+                     groupby='cohort', update_cohort=True, _fix=True) :
+    """ 
+    The number of new patients each year who have one or more of the codes
     
-    if codes:
-        rows=df.get_rows(df=df, codes=codes, cols=cols)
+    
+    Args:
+        df (dataframe): Dataframe with events, dates and medical codes
+        
+        codes (string, list or dict): The codes for the disease
+        
+        cols (string, list): Name of cols where codes are located
+        
+        pid (str): Name of column with the personal identification number
+        
+        date (str): Name of column with the dates for the events 
+            (the dtype of the column must be datetime)
+        
+        min_events (int): Number of events with the codes required for inclusion
+        
+        within_period (int): The number of events have to occurr within a period (measured in days) before the person is included
+            For instance: min_events=2 and within_period=365 means
+            that a person has to have two events within one year
+            in order to be included in the calculation of incidence.
+        
+        groupby (string): Name of column to group the results by. Typically 
+            year if you have data for many years (to get incidence each year)
+            
+        update_cohort (bool): The cohort a person is assigned to might change
+            as the criteria (min_events and within_period) change. If update
+            is True, the cohort will be automatically updated to reflect this.
+            Exampple: A person may have her first event in 2011 and initially
+            be assigned to the 2011 cohort, but have no other events for two 
+            years. Then in 2014 the person may have five events. If the 
+            criteria for inclusion is two event in one year, the updated cohort
+            for this person will be 2014 and not the original 2011.
+        
+        Returns: 
+            Series (For instance, number of new patients every year)
+        
+        Examples:
+            df['cohort']=df.groupby('pid').start_date.min().dt.year
+            
+            incidence(df, codes=['K50*', 'K51*'], cols=['icdmain', 'icdbi'], sep=',', pid='pid', date='start_date')
+            
+            incidence(df, codes={'cd':'K50*', 'uc':'K51*'}, cols=['icdmain', 'icdbi'], sep=',', pid='pid', date='start_date')
+        
+        todo:
+            make cohort variable redundant ... already have date!
+            make it possible to do monthly, quarterly etc incidence?
+            
+    """
+    sub=df
+    incidence_list=[]
+    namelist=[]
+    
+    if _fix:
+        codes, cols, allcodes=fix_args(df=df, codes=codes, cols=cols, sep=sep, merge=True, group=False)
+        rows=get_rows(df=df, codes=allcodes, cols=cols, sep=sep, _fix=False)
         sub=df[rows]
-    else:
-        sub=df
-    
-    events = sub.groupby(pid).size()
-    sub=sub[events>=min_events]
+
+    for name, codelist in codes.items():  
+        rows=get_rows(df=sub, codes=codelist, cols=cols, sep=sep, _fix=False)
+        sub=sub[rows]
+        events = sub.groupby(pid).size()
+        sub=sub[events>=min_events]
     
 
-    if within_period:
-        days_to_next = (sub.sort_values([pid, date]).groupby(pid)[date]
-                                                        .diff(periods=-min_events)
-                                                        .dt.days)
-                                                        
-        #note: to be generalized? 
-        #not necessarily measure diff in days or cohort in years
-        inside = (days_to_next >= -within_period)
-        sub=sub[inside]
+        if within_period:
+            days_to_next = (sub.sort_values([pid, date]).groupby(pid)[date]
+                                                            .diff(periods=-(min_events-1))
+                                                            .dt.days)
+                                                            
+            #note: to be generalized? 
+            #not necessarily measure diff in days or cohort in years
+            inside = (days_to_next >= -within_period)
+            sub=sub[inside]
+            
+            if update_cohort:
+                sub['cohort']=sub.groupby(pid)[date].min().dt.year
+            # may need ot update values in other rouping variables too?
+            # for instance: disease group, if it is based on calc that changes 
+            # as obs are eliminated because of within_period requirements?
+            # eg. disease group categorization based on majority of codes being x
+
+        if groupby:
+            incidence_df = sub.groupby(groupby)[pid].nunique()
+        else:
+            incidence_df = sub[pid].nunique()
+            
+            
+        incidence_list.append(incidence_df)
+        namelist.append(name)
         
-        if update_cohort:
-            sub['cohort']=sub.groupby(pid)[date].min().dt.year
-        # may need ot update values in other rouping variables too?
-        # for instance: disease group, if it is based on calc that changes 
-        # as obs are eliminated because of within_period requirements?
-        # eg. disease group categorization based on majority of codes being x
+    incidence_df = pd.concat(incidence_list, axis=1)
+    incidence_df.columns = namelist
     
-    events_per_person = sub.groupby(pid).size()
-    enough_events = events_per_person>= min_events
-    pids = enough_events.index[enough_events] 
-    
-    if groupby:
-        incidence_df = sub[sub.pid.isin(pids)].groupby(groupby)[pid].nunique()
-    else:
-        incidence_df = sub[sub.pid.isin(pids)][pid].nunique()
+    if len(incidence_list)==1:
+        incidence_df=incidence_df.squeeze()
+        
     return incidence_df
 
 
+#%%
+def make_cohort(df, codes=None, cols=None, sep=None, pid='pid', 
+                     date='indate', min_events=1, within_period=None, _fix=True):
+    """ 
+    The first year with a given code given conditions
+    
+    
+    Args:
+        df (dataframe): Dataframe with events, dates and medical codes
+        
+        codes (string, list or dict): The codes for the disease
+        
+        cols (string, list): Name of cols where codes are located
+        
+        pid (str): Name of column with the personal identification number
+        
+        date (str): Name of column with the dates for the events 
+            (the dtype of the column must be datetime)
+        
+        min_events (int): Number of events with the codes required for inclusion
+        
+        within_period (int): The number of events have to occurr within a period (measured in days) before the person is included
+            For instance: min_events=2 and within_period=365 means
+            that a person has to have two events within one year
+            in order to be included in the calculation of incidence.
+        
+        
+        Returns: 
+            Series (For instance, number of new patients every year)
+        
+        Examples:
+            df['cohort']=df.groupby('pid').start_date.min().dt.year
+            
+            make_cohort(df, codes=['K50*', 'K51*'], cols=['icdmain', 'icdbi'], sep=',', pid='pid', date='start_date')
+            
+            make_cohort(df, codes={'cd':'K50*', 'uc':'K51*'}, cols=['icdmain', 'icdbi'], sep=',', pid='pid', date='start_date')
+            
+        todo:
+            make cohort variable redundant ... already have date!
+            make it possible to do monthly, quarterly etc incidence?        
+    """
+    
+    sub=df
+    
+    if _fix:
+        codes, cols, allcodes=fix_args(df=df, codes=codes, cols=cols, sep=sep, merge=True, group=False)     
+        rows=get_rows(df=df, codes=allcodes, cols=cols, sep=sep, _fix=False)
+        sub=df[rows]
+
+    cohorts=[]
+    names=[]
+    
+    for name, codelist in codes.items():  
+        rows=get_rows(df=sub, codes=codelist, cols=cols, sep=sep, _fix=False)
+        sub2=sub[rows]
+        events = sub2.groupby(pid).size()
+        pids= events.index[events>=min_events]
+        sub2 = sub2[sub2[pid].isin(pids)]
+ 
+        if within_period:
+            days_to_next = (sub2.sort_values([pid, date]).groupby(pid)[date]
+                                                            .diff(periods=-(min_events-1))
+                                                            .dt.days)
+                                                            
+            inside = (days_to_next >= -within_period)
+            sub2=sub2[inside]
+    
+        cohort=sub2.groupby(pid)[date].min().dt.year 
+        cohorts.append(cohort)
+        names.append(name)
+    
+    cohorts=pd.concat(cohorts, axis=1)
+    cohorts.columns=names
+        
+    return cohorts
+
+def test_make_cohort():
+    a = """
+        icdmain,icdbi,date,pid
+        K50,,20.01.2018,1
+        K50,,17.03.2018,1
+        K51,,12.05.2018,1
+        K50,	K51	,07.07.2018,	1
+        K51,	K50,01.09.2018,	1
+        K51,,27.10.2018,1
+        K50,,22.12.2018,1
+        K51,	K50	,01.01.2016,	2
+        K50,,05.01.2017,2
+        K51,,08.06.2017,2
+        K50,,04.02.2016,3
+        """
+        
+    a=StringIO(a)
+    df2=pd.read_csv(a)
+    
+    assert len(make_cohort(df=df, codes={'ibd': ['K50*', 'K51*']}, 
+                          cols=['icdmain', 'icdbi'],
+                          sep=',', 
+                          pid='pid', 
+                          date='date'))==3
+    
+    assert len(make_cohort(df=df, codes={'ibd': ['K50*', 'K51*']}, 
+                          cols=['icdmain', 'icdbi'],
+                          min_events=2,
+                          within_period=100,
+                          sep=',', 
+                          pid='pid', 
+                          date='date'))==1
+                                             
+
+
+    
 #%%
 def sample_persons(df, pid='pid', n=None, frac=0.1):
     """
@@ -125,11 +299,25 @@ def get_ids(df, codes, cols, groupby, pid='pid', out=None, sep=None):
     return grouped_ids
 
 #%%
+def sniff_sep(df, cols=None, sep=','):
+    cols=listify(cols)
+    for col in cols:
+        if (sep in df[col].head(100).str.cat() 
+                or 
+            sep in df[col].tail(100).str.cat()):
+            sep=sep
+            break
+    else:
+        sep=None
+    return sep
+
+#%%
 def unique_codes(df,
            cols=None,
            sep=None,
            strip=True,
            name=None,
+           _sniffsep=True,
            _fix=True):        
         
     """
@@ -170,6 +358,9 @@ def unique_codes(df,
     unique_terms=set(pd.unique(df[cols].values.ravel('K')))
     #unique_terms={str(term) for term in unique_terms}
     
+    if _sniffsep and not sep: 
+        sep=sniff_sep(df, cols)
+                    
     if sep:
         compound_terms = {term for term in unique_terms if sep in str(term)}
         single_uniques = {term for term in unique_terms if sep not in str(term)}
@@ -301,7 +492,7 @@ def stringify(df,
         return all_events
 
 #%%
-def format_codes(df=None, codes=None):
+def format_codes(codes, merge=True):
     """ 
     Makes sure that the codes has the desired format: a dict with strings as 
     keys (name) and a list of codes as values)
@@ -314,18 +505,28 @@ def format_codes(df=None, codes=None):
     Examples:
             codes = '4AB02'
             codes='4AB*'
+            codes = ['4AB02', '4AB04', '4AC*']
             codes = ['4AB02', '4AB04']
             codes = {'tumor' : 'a4*', 'diabetes': ['d3*', 'd5-d9']}
             codes = 'S72*'
             codes = ['K50*', 'K51*']
             
+            format_codes(codes, merge=False)
+            
     TODO: test for correctness of input, not just reformat (is the key a str?)
     """
     codes=listify(codes)
     
-    if isinstance(codes, list):
-        codes = {code:[code] for code in codes}
+    # treeatment of pure lists depends on whether special classes should be treated as one merged group or separate codes
+    # exmple xounting of Z51* could mean count the total number of codes with Z51 OR a shorthand for saying "count all codes starting with Z51 separately
+    # The option "merged, enables the user to switch between these two interpretations
     
+    if isinstance(codes, list):
+        if merge:
+            codes = {'_'.join(codes):codes}
+        else:
+            codes = {code:[code] for code in codes}
+            
     elif isinstance(codes, dict):
         new_codes={}
         for name, codelist in codes.items():
@@ -348,7 +549,6 @@ def replace_codes(codes):
         if name != code:
             return True #ok, not beautiful ... may use break or any?
     return False
-              
 #%%
 def expand_codes(df=None,
           codes=None, 
@@ -362,7 +562,8 @@ def expand_codes(df=None,
           del_dot=False,
           case_sensitive= True,
           exist=True,
-          merge=True):
+          merge=False,
+          group=False):
     
     """
     Expand list of codes with hyphens and star notation to full codes
@@ -383,7 +584,22 @@ def expand_codes(df=None,
         get all atc codes that are related to steroids in the atc column:
             codes= ['H02*', 'J01*', 'L04AB02', 'L04AB04']
             codes=expand_codes(df=df, codes=['H02*'], cols='atc')
-        
+            codes=expand_codes(df=df, codes=['K25*'], cols='icdmain', sep=',', codebook=codebook)
+            codes=expand_codes(df=df, codes=['K25*-K28*'], cols='icdmain', sep=',', codebook=codebook, merge=True)
+            codes=expand_codes(df=df, codes=['K25*-K28*'], cols='icdmain', sep=',', codebook=codebook, merge=False)
+            codes=expand_codes(df=df, codes=['K25*-K28*'], cols='icdmain', sep=',', codebook=codebook, merge=False, group=True)
+            codes=expand_codes(df=df, codes=['K25*-K28*'], cols='icdmain', sep=',', codebook=codebook, merge=True, group=True)
+            codes=expand_codes(df=df, codes=['K25*-K28*'], cols='icdmain', sep=',', codebook=codebook, merge=False, group=True)
+            codes=expand_codes(df=df, codes=['K25*-K28*'], cols='icdmain', sep=',', codebook=codebook, merge=False, group=False)
+
+            
+            codes=expand_codes(df=df, codes=['K50*', 'K51*'], cols='icdmain', sep=',', codebook=codebook, merge=False, group=True)
+            codes=expand_codes(df=df, codes=['K50*', 'K51*'], cols='icdmain', sep=',', codebook=codebook, merge=False, group=False)
+            codes=expand_codes(df=df, codes=['K50*', 'K51*'], cols='icdmain', sep=',', codebook=codebook, merge=True, group=False)
+            codes=expand_codes(df=df, codes=['K50*', 'K51*'], cols='icdmain', sep=',', codebook=codebook, merge=True, group=True)
+
+            
+        codebook = df.icdmain.unique_codes(sep=',')
         
         ulcer = 	['K25*-K28*']
         liver = 	'B18* K70.0-K70.3 K70.9 K71.3-K71.5 K71.7 K73* K74* K76.0 K76.2-K76.4 K76.8 K76.9 Z94.4'.split()
@@ -397,8 +613,7 @@ def expand_codes(df=None,
     """
       
     codes=listify(codes)
-
-        
+     
     if codebook:
         unique_words = set(codebook)  
     else:
@@ -411,16 +626,16 @@ def expand_codes(df=None,
     # expanded codes
     
     if isinstance(codes, list):
-        codes={'tmp':codes}
-        just_a_list=True
+        alist=True
     else:
-        codes=format_codes(df=df, codes=codes, cols=cols, sep=sep)
-        just_a_list=False
-    
+        alist=False
+        
+    codes=format_codes(codes=codes, merge=merge)
+              
     all_new_codes={}
     
     for name, codelist in codes.items():
-           
+                   
         # for instance in icd-10 some use codes with dots, some without
         if del_dot:
             #unique_words = {word.replace('.', '') for word in unique_words}
@@ -452,8 +667,24 @@ def expand_codes(df=None,
             
         all_new_codes[name]=codelist
         
-        if just_a_list:
-            all_new_codes=list(all_new_codes['tmp'])
+        # Change dictionary depending on whether the user wants codes with 
+        # special notations (star, hyphen, colon, eg. K51* to stay as a 
+        # separate group or be split in its individual subcodes
+    
+    if (not group) and (not merge):
+        new_all_new_codes={}
+        for name, codelist in all_new_codes.items():
+            if ('*' in name) or ('-' in name) or (':' in name):
+                for code in codelist:
+                    new_all_new_codes[code] = [code]
+            else:
+                new_all_new_codes[name] = codelist
+        all_new_codes= new_all_new_codes
+        
+    if merge:
+        pass
+        #all_new_codes=list(all_new_codes.values())[0]
+    
     return all_new_codes
 
 #%% 
@@ -536,6 +767,7 @@ def persons_with(df,
              merge=True,
              first_date=None,
              last_date=None,
+             group=False,
              _fix=True):
     """
     Determine whether people have received a code
@@ -567,18 +799,13 @@ def persons_with(df,
         - this may apply in general? functions that work on event data may then also work on person level data
         - allow user to input person level dataframe source?
     """
-    if _fix:
-        df, cols = to_df(df, cols)
-        cols=listify(cols)
-        cols=expand_cols(df, cols)
-        codes=listify(codes)
-        codes=expand_codes(df=df, codes=codes, cols=cols, sep=sep)
-        allcodes=get_allcodes(codes)
-        codes=format_codes(df=df, codes=codes, cols=cols, sep=sep)
-        
-    rows=get_rows(df=df, codes=codes, cols=cols, sep=sep, _fix=False)
+    sub=df
     
-    sub = df[rows]
+    if _fix:
+        df, cols = to_df(df=df, cols=cols)
+        codes, cols, allcodes, sep = fix_args(df=df, codes=codes, cols=cols, sep=sep, merge=merge, group=group)
+        rows=get_rows(df=df, codes=allcodes, cols=cols, sep=sep, _fix=False)
+        sub = df[rows]
     
     df_persons = sub.groupby(pid)[cols].apply(lambda s: pd.unique(s.values.ravel()).tolist()).astype(str)
     
@@ -678,16 +905,16 @@ def fix_cols(df, cols):
     return cols
 
 #%%
-def fix_codes(df, codes=None, cols=None, sep=None):
+def fix_codes(df, codes=None, cols=None, sep=None, merge=False, group=False):
     if not codes:
         codes=count_codes(df=df, cols=cols, sep=sep).sort_values(ascending=False)[:5]
     
-    codes=format_codes(df=df, codes=codes, cols=cols, sep=sep)
-    codes=expand_codes(df=df, codes=codes, cols=cols, sep=sep)
+    codes=format_codes(codes=codes, merge=merge)
+    codes=expand_codes(df=df, codes=codes, cols=cols, sep=sep, merge=merge, group=group)
     return codes
 
 #%%
-def fix_args(df, codes=None, cols=None, sep=None):
+def fix_args(df, codes=None, cols=None, sep=None, merge=False, group=False, _sniffsep=True):
     
     # Use all columns if no column is specified
     # Series if converted to df (with pid column, assumed to be in the index)
@@ -695,28 +922,32 @@ def fix_args(df, codes=None, cols=None, sep=None):
         cols=list(df.columns)
             
     cols=expand_cols(df=df, cols=cols)
-            
+    
+    if _sniffsep and not sep :
+        sep=sniff_sep(df=df, sep=',')
+       
     if not codes:
         codes=count_codes(df=df, cols=cols, sep=sep).sort_values(ascending=False).index[:5]
         codes=list(codes)
         
-    codes=format_codes(df=df, codes=codes, cols=cols, sep=sep)
-    codes=expand_codes(df=df, codes=codes, cols=cols, sep=sep)
-    
+    codes=format_codes(codes=codes, merge=merge)
+    codes=expand_codes(df=df, codes=codes, cols=cols, sep=sep, merge=merge, group=group)
+    codes=format_codes(codes=codes, merge=merge)
+
      # useful to have full codelist (of codes only, after expansion)
     full_codelist = set()
     for name, codelist in codes.items():
         full_codelist.update(set(codelist))
     allcodes=list(full_codelist)
     
-    return cols, codes, allcodes
+    return codes, cols, allcodes, sep
 
 #%%
 def to_df(df, cols=None):
     if isinstance(df, pd.Series):
         df=df.to_frame()
         cols=list(df.columns)
-        df['pid'] = df.index_values
+        df['pid'] = df.index.values
     return df, cols
 #%% 
 def subset(df, codes, cols, sep):
@@ -744,7 +975,7 @@ def get_allcodes(codes):
     
 #%%
 def count_persons(df, codes=None, cols=None, pid='pid', sep=None, 
-                  normalize=False, dropna=False, _fix=True):
+                  normalize=False, dropna=False, group=False, merge=False, _fix=True):
     """
     Counts number of individuals who are registered with given codes
     
@@ -786,6 +1017,11 @@ def count_persons(df, codes=None, cols=None, pid='pid', sep=None,
         count_persons(df=df, codes='4AB04', cols='ncmpalt', sep=',', pid='pid')
         
         count_persons(df=df, codes=['4AB*', '4AC*'], cols='ncmpalt', sep=',', pid='pid')
+        
+        count_persons(df=df, codes=['4AB*', '4AC*'], cols='ncmpalt', sep=',', pid='pid', group=True)
+        count_persons(df=df, codes=['4AB*', '4AC*'], cols='ncmpalt', sep=',', pid='pid', group=True, merge=True)
+
+
 
         count_persons(df=df, codes='4AB*', cols='ncmpalt', sep=',', pid='pid')
         count_persons(df=df, codes='4AB04', cols='ncmpalt', sep=',', pid='pid')
@@ -795,15 +1031,18 @@ def count_persons(df, codes=None, cols=None, pid='pid', sep=None,
         # Counts number of persons for all codes
         count_persons(df=df.ncmpalt, sep=',', pid='pid')
     """
+    
+    subset=df
+        
     if _fix:
         # expands and reformats columns and codes input
         df, cols = to_df(df=df,cols=cols)
-        cols, codes, allcodes = fix_args(df=df, codes=codes, cols=cols, sep=sep)
+        codes, cols, allcodes, sep = fix_args(df=df, codes=codes, cols=cols, sep=sep, group=group, merge=merge)
         rows=get_rows(df=df,codes=allcodes, cols=cols, sep=sep, _fix=False)
         subset=df[rows].set_index(pid)
     
     # make a df with the extracted codes         
-    code_df=extract_codes(df=subset, codes=codes, cols=cols, sep=sep, _fix=False)
+    code_df=extract_codes(df=subset, codes=codes, cols=cols, sep=sep, _fix=False, series=False)
     
     labels=list(code_df.columns)  
 
@@ -813,7 +1052,9 @@ def count_persons(df, codes=None, cols=None, pid='pid', sep=None,
         counted[label]=code_df[code_df[label]].index.nunique()
     
     if not dropna:
-        counted['NaN']=df[pid].nunique()-counted.sum()
+        counted['NaN']=df[pid].nunique()-counted.sum() 
+        #hmm may be negative, more bug than feature
+        # solution? count people with none of the codes
         
     if normalize:
         counted=counted/counted.sum()
@@ -821,7 +1062,63 @@ def count_persons(df, codes=None, cols=None, pid='pid', sep=None,
     return counted
 
 #%%
-def search_text(df, text, cols=['text'], select = None, raw=False, regex=False, logic=True, underscore=False):
+def get_rows_expression(df, expr, cols=None, sep=None, raw=False, regex=False, logic=True, codebook=None, _fix=True):     
+    
+    """
+    expr = 'K52* and not (K50 or K51)'
+    
+    1. pick out every code expression nd expand it? (only star expansion, hyphen would work too? key is to avoud codebook or full lookup )
+    2. get codebook (if needed)
+    2. use extract coe on each expression
+    
+    2. execute logic
+    3. return series (bool)
+    
+    
+    """
+    cols=listify(cols)
+    
+    df, cols = to_df(df, cols)
+    
+    ## find all whole words used in the text
+        
+    # find all words        
+    words=set(expr.split())
+    words = {word.strip('(').strip(')') for word in words}
+    
+    skipwords = {'and', 'or', 'not'}
+    
+    if skipwords:
+        words = words - skipwords
+        
+    if not codebook:
+        codebook=unique_codes(df=df, cols=cols, sep=sep)    
+    
+    #must avoid * since eval does not like in in var names, replace * with three ___
+    worddict = {word.replace('*', '___'):[word] for word in words}
+    coldf = pd.DataFrame(index=df.index)       
+    
+    codes=expand_codes(df=df, codes=worddict, cols=cols, sep=sep, codebook=codebook)
+        
+    for name, codelist in codes.items():
+        coldf[name]=get_rows(df=df, codes=codelist, cols=cols, sep=sep, _fix=False)
+    
+    evalexpr=expr
+    
+    for word in words:
+        word=word.strip()
+        evalexpr = evalexpr.replace(word, f'{word}==1')
+    
+    evalexpr = evalexpr.replace('*', '___')
+
+    coldf=coldf.fillna(False)
+    
+    expr_evaluated = coldf.eval(evalexpr)
+    
+    return expr_evaluated
+    
+#%%
+def search_text(df, text, cols=['text'], select = None, raw=False, regex=False, logic=True, has_underscore=False):
     """
     Searches column(s) in a dataframe for ocurrences of words or phrases
     
@@ -843,7 +1140,8 @@ def search_text(df, text, cols=['text'], select = None, raw=False, regex=False, 
     Examples:
         icd.search_text('diabetes')
         icd.search_text('diabetes and heart')
-        icd.search_text('cancer not (breast or prostate)')
+        icd.search_text('cancer and not (breast or prostate)')
+        
         
      Strcture 
         0. select rows (using query)
@@ -854,6 +1152,10 @@ def search_text(df, text, cols=['text'], select = None, raw=False, regex=False, 
         4. create str. contains bool col for rhvert ord
         5. kjør pd eval
     """
+    
+    cols=listify(cols)
+    
+    df, cols = to_df(df, cols)
     
     # make it a df with text as col if input is a series, or it is used as a method used on a series object
     if isinstance(df, pd.Series):
@@ -873,15 +1175,17 @@ def search_text(df, text, cols=['text'], select = None, raw=False, regex=False, 
     # first: words within quotation marks (within the string) are to be considered "one word"
     # to make this happen, replace space in text within strings with underscores
     # then the regex will consider it one word - and we reintroduce spaces in texts with stuff with underscore when searching
-    if not underscores:
-        phrases = re.findall(r'\"(.+?)\"',  )
+    if not has_underscore:
+        phrases = re.findall(r'\"(.+?)\"', text)
         for phrase in phrases:
-            text.replace(phrase, phrase.replace(' ', '_'))
+            text = text.replace(phrase, phrase.replace(' ', '_'))
     
     # find all words        
     word_pattern = r'\w+'
     words=set(re.findall(word_pattern, text))
     skipwords = {'and', 'or', 'not'}
+    if skipwords:
+        words = words - skipwords
     rows_all_cols= len(df) * [False] # nb common mistake
     
     # only need to use logical operator transformation if the string has and, or or not in it
@@ -889,13 +1193,13 @@ def search_text(df, text, cols=['text'], select = None, raw=False, regex=False, 
         logic=True
     
     # conduct search: either just the raw tet, the regex, or the one with logical operators (and, or not)
-    if raw_text:
+    if raw:
         for col in cols:
             rows_with_word = df[col].str_contains(text, na=False, regex=False)
             rows_all_cols = rows_all_cols|rows_with_word #doublecheck!
     elif regex:
         for col in cols:
-            rows_with_word = df[text_col].str_contains(text, na=False, regex=True)
+            rows_with_word = df[col].str_contains(text, na=False, regex=True)
             rows_all_cols = rows_all_cols|rows_with_word #doublecheck!
 
     elif logic:
@@ -903,12 +1207,12 @@ def search_text(df, text, cols=['text'], select = None, raw=False, regex=False, 
             for word in words:
                 name=word
                 # words with underscores are phrases and underscores must be removed before searching
-                if ('_' in word) and (underscore): word.replace('_', ' ')
-                df[name] = df[col].str_contains(word, na=False)
+                if ('_' in word) and (has_underscore): word=word.replace('_', ' ')
+                df[name] = df[col].str.contains(word, na=False)
             all_words=re.sub(r'(\w+)', r'\1==1', text)
             # inelegant, but works 
             for word in skipwords:
-                all_words.replace(f'{word}==1', word)       
+                all_words=all_words.replace(f'{word}==1', word)       
             rows_with_word = df.eval(all_words) #does the return include index?
         rows_all_cols = rows_all_cols|rows_with_word #doublecheck!
     else:
@@ -957,8 +1261,7 @@ def expand_cols(df, cols, star=True, hyphen=True, colon=True, regex=None):
     """
     
     cols=listify(cols)
-    #expanded_cols = cols.copy() #nb copy(), bug if not! 
-    print(type(df))
+   
     allcols = list(df.columns)
     
     if hyphen: 
@@ -1106,7 +1409,7 @@ def first_event(df, codes, cols=None, pid = 'pid', date='in_date', sep=None):
     cols = expand_cols(df=df, cols=cols)
     codes=expand_codes(df=df,codes=codes,cols=cols, sep=sep)
     
-    rows_with_codes=get_rows(df=df, codes=codes, cols=cols, sep=sep)
+    rows_with_codes=get_rows(df=df, codes=codes, cols=cols, sep=sep, _fix=False)
     subdf=df[rows_with_codes]
     
     #groupby.extent(pid)
@@ -1573,6 +1876,14 @@ def expand_replace(df,replace,cols, sep=None, strip=True):
     return replace
 #%%
 def reverse_dict(dikt):
+    new_dict={}
+    for name, codelist in dikt.items():
+        codelist=listify(codelist)
+        new_dict.update({code:name for code in codelist})
+    return new_dict
+#%%
+    
+def reverse_dict_old(dikt):
     """
     takes a dict and return a new dict with old values as key and old keys as values (in a list)
     
@@ -1594,8 +1905,8 @@ def reverse_dict(dikt):
 
 #%%
 
-def extract_codes(df, codes, cols, sep=None, new_sep=',', na_rep='', 
-                  prefix=None, merge=False, out='bool', _fix=True):
+def extract_codes(df, codes, cols=None, sep=None, new_sep=',', na_rep='', 
+                  prefix=None, merge=False, out='bool', _fix=True, series=True, group=False):
     """
     Produce one or more columns with only selected codes
     
@@ -1617,13 +1928,13 @@ def extract_codes(df, codes, cols, sep=None, new_sep=',', na_rep='',
     
     """
     if _fix:
-        df=to_df(df)
-        cols, codes, allcodes = fix_args(df=df, codes=codes, cols=cols, sep=sep)
+        df, cols = to_df(df=df, cols=cols)
+        codes, cols, allcodes, sep = fix_args(df=df, codes=codes, cols=cols, sep=sep, group=group, merge=merge)
     
     subset=pd.DataFrame(index=df.index)
      
     for k, v in codes.items():
-        rows = get_rows(df=df,codes=v,cols=cols,sep=sep)
+        rows = get_rows(df=df,codes=v,cols=cols,sep=sep, _fix=False)
         if out=='bool':        
             subset[k]=rows           
         elif out =='int':
@@ -1650,8 +1961,8 @@ def extract_codes(df, codes, cols, sep=None, new_sep=',', na_rep='',
         if out=='category':
             subset=subset.astype('category')
             
-    # return a series if only one code is asked for
-    if len(codes)==1:
+    # return a series if only one code is asked for (and also if merged?)
+    if series and (len(codes)==1):
         subset=subset.squeeze()
     
     return  subset
@@ -1728,7 +2039,9 @@ def label(df, labels=None, read=True, path=None):
 
 #%%  
 
-def count_codes(df, codes=None, cols=None, sep=None, merge=True, strip=True, ignore_case=False, normalize=False, ascending=False, _fix=True):
+def count_codes(df, codes=None, cols=None, sep=None, strip=True, 
+                ignore_case=False, normalize=False, ascending=False, _fix=True, 
+                merge=False, group=False, dropna=True):
     """
     Count frequency of values in multiple columns or columns with seperators
     
@@ -1762,40 +2075,44 @@ def count_codes(df, codes=None, cols=None, sep=None, merge=True, strip=True, ign
     -------------
     
     count_codes(df, codes='K51*', cols='icdmain', sep=',')
-    count_codes(df, codes='Z51*', cols=['icdmain', 'icdbi'], sep=None)
+    count_codes(df, codes='K51*', cols='icdmain', sep=',', group=True)
     count_codes(df, codes='Z51*', cols=['icdmain', 'icdbi'], sep=',')
+    count_codes(df, codes='Z51*', cols=['icdmain', 'icdbi'], sep=',', group=True)
     count_codes(df, codes={'radiation': 'Z51*'}, cols=['icdmain', 'icdbi'], sep=',')
+    count_codes(df, codes={'radiation': 'Z51*'}, cols=['icdmain', 'icdbi'], sep=',')
+    count_codes(df, codes={'crohns': 'K50*', 'uc':'K51*'}, cols=['icdmain', 'icdbi'], sep=',')
+    count_codes(df, codes={'crohns': 'K50*', 'uc':'K51*'}, cols=['icdmain', 'icdbi'], sep=',', dropna=True)
+    count_codes(df, codes={'crohns': 'K50*', 'uc':'K51*'}, cols=['icdmain', 'icdbi'], sep=',', dropna=False)
+    count_codes(df, codes={'crohns': 'K50*', 'uc':'K51*'}, cols=['icdmain', 'icdbi'], sep=',', dropna=False, group=False)
+    count_codes(df, codes=['K50*', 'K51*'], cols=['icdmain', 'icdbi'], sep=',', dropna=False, group=True, merge=False)
+    count_codes(df, codes=['K50*', 'K51*'], cols=['icdmain', 'icdbi'], sep=',', dropna=False, group=False, merge=False)
+    count_codes(df, codes=['K50*', 'K51*'], cols=['icdmain', 'icdbi'], sep=',', dropna=False, group=False, merge=True)
+    count_codes(df, codes=['K50*', 'K51*'], cols=['icdmain', 'icdbi'], sep=',', dropna=True, group=True, merge=True)
+    #group fasle, merge true, for list = wrong ...
+    
+    count_codes(df, codes=['K50*', 'K51*'], cols=['icdmain', 'icdbi'], sep=',', dropna=True, group=False, merge=False)
+
+    
     """
     # count all if codes is codes is not specified
     # use all columns if col is not specified 
+    sub=df
     
     if _fix:
-        if codes: 
-            codes=listify(codes)
-    
-        if not cols:
-            if isinstance(df,pd.Series):
-                df=pd.DataFrame(df)
-                cols=list(df.columns)
-            elif isinstance(df, pd.DataFrame):
-                cols=list(df.columns)
-        else:
-            cols=listify(cols)
-    
-
-        if isinstance(codes, dict):
-            replace=codes.copy()
-            codes=list(codes.keys())
-            
-        cols=expand_cols(df=df, cols=cols)
+        df, cols = to_df(df=df, cols=cols)
+        cols = fix_cols(df=df, cols=cols)
         
         if codes:
-            codes=expand_codes(df=df, codes=codes, cols=cols, sep=sep)
-            rows=get_rows(df=df, codes=codes, cols=cols, sep=sep)
-            df=df[rows]
-           
+            codes=format_codes(codes=codes, merge=merge)
+            codes=expand_codes(df=df, codes=codes, cols=cols, sep=sep, merge=merge, group=group)
+            allcodes=get_allcodes(codes)
+            if dropna:
+                rows=get_rows(df=df, codes=allcodes, cols=cols, sep=sep, _fix=False)
+                sub=df[rows]
+ 
+            
     if sep:
-        count_df=[df[col].str
+        count_df=[sub[col].str
                       .split(sep, expand=True)
                       .apply(lambda x: x.str.strip())
                       .to_sparse()
@@ -1806,16 +2123,23 @@ def count_codes(df, codes=None, cols=None, sep=None, merge=True, strip=True, ign
         count_df=pd.DataFrame(count_df).T
         code_count=count_df.sum(axis=1)
     else:
-        code_count=df[cols].apply(pd.Series.value_counts).sum(axis=1)
+        code_count=sub[cols].apply(pd.Series.value_counts).sum(axis=1)
 
+    
     if codes:
-        code_count=code_count[codes]
+        allcodes=get_allcodes(codes)
+        not_included_n=code_count[~code_count.isin(allcodes)].sum()
+        code_count = code_count[allcodes]
+        if not dropna:        
+            code_count['na'] = not_included_n
     
-    if replace:
-        replace=expand_replace(df=df, replace=replace, cols=cols, sep=sep, strip=strip)
+    if isinstance(codes, dict):
+        code_count=code_count.rename(index=reverse_dict(codes)).sum(level=0)
+        
+    if normalize:
+        code_n = code_count.sum()
+        code_count = code_count/code_n
 
-        code_count=code_count.rename(index=replace).groupby(level=0).sum()
-    
     if ascending:
         code_count = code_count.sort_values(ascending=True)
     else:
@@ -1824,10 +2148,104 @@ def count_codes(df, codes=None, cols=None, sep=None, merge=True, strip=True, ign
     
     return code_count                 
 
+#%%
+def find_spikes(df, codes=None, cols=None, sep=None, groups=None, interact=False, _fix=True, threshold=3):
+    """
+    Identifies large increases or decreases in use of given codes in the specified groups
+    rename? more like an increase identifier than a spike ideintifier as it is
+    spikes implies relatively low before and after comparet to the "spike"
+    rem: spikes can also be groups of years (spike in two years, then down again)
+    
+    """
+    sub=df
+    groups=listify(groups)
+    
+    if _fix:
+        df, cols=to_df(df, cols)
+        codes, cols, allcodes, sep = fix_args(df=df, codes=codes, cols=cols, sep=sep, merge=False, group=False)
+        rows=get_rows(df=df, codes=allcodes, cols=cols, sep=sep, _fix=False)
+        sub=df[rows]
+    
+    find_changes()
+    
+
+    return all_groups
 
 #%%
+def find_shifts(df, codes=None, cols=None, sep=None, groups=None, interact=False, _fix=True, threshold=3):
+    """
+    Identifies large increases or decreases in use of given codes in the specified groups
+    rename? more like an increase identifier than a spike ideintifier as it is
+    spikes implies relatively low before and after comparet to the "spike"
+    rem: spikes can also be groups of years (spike in two years, then down again)
+    
+    """
+    find_changes()
+    #    do_mocing average and reverse ma.
+    # use shorter then whole period window if think there may be more than one shift
+    
+    return
+
+#%%
+    
+def find_cycles(df, codes=None, cols=None, sep=None, groups=None, interact=False, _fix=True, threshold=3):
+    """
+    Identifies large increases or decreases in use of given codes in the specified groups
+    rename? more like an increase identifier than a spike ideintifier as it is
+    spikes implies relatively low before and after comparet to the "spike"
+    rem: spikes can also be groups of years (spike in two years, then down again)
+    
+    """
+    find_changes()
+    return
 
     
+#%%
+    
+def find_changes(df, codes=None, cols=None, sep=None, groups=None, interact=False, _fix=True, threshold=3):
+    """
+    Identifies large increases or decreases in use of given codes in the specified groups
+    rename? more like an increase identifier than a spike ideintifier as it is
+    spikes implies relatively low before and after comparet to the "spike"
+    rem: spikes can also be groups of years (spike in two years, then down again)
+    
+    """
+    sub=df
+    groups=listify(groups)
+    
+    if _fix:
+        df, cols=to_df(df, cols)
+        codes, cols, allcodes, sep = fix_args(df=df, codes=codes, cols=cols, sep=sep, merge=False, group=False)
+        rows=get_rows(df=df, codes=allcodes, cols=cols, sep=sep, _fix=False)
+        sub=df[rows]
+    
+    all_groups={}
+    
+    for group in groups:
+        counted=[]
+        names=[]
+        for name, codelist in codes.items():
+            count=sub.groupby(group).apply(count_codes, 
+                                                   codes={name:codelist}, 
+                                                   cols=cols,
+                                                   sep=sep,
+                                                   dropna=True, 
+                                                  _fix=False)
+            counted.append(count)
+            #names.append(name)
+        
+        counted=pd.concat(counted, axis=1)
+        #counted.columns=names
+        
+        if threshold:
+            counted_delta = counted.pct_change()/counted.pct_change().abs().mean()
+            counted_delta = counted_delta[counted_delta>threshold]
+            counted=counted_delta
+            
+        all_groups[group]=counted
+    
+    return all_groups
+
 #%%
 def lookup_codes(dikt, codes):
     """
@@ -1872,7 +2290,7 @@ def get_codes(dikt, text):
             
 
 #%%
-def stringify_order(df, codes=None, cols=None, pid='pid', event_start='in_date', sep=None, keep_repeats=True, only_unique=False):
+def stringify_order(df, codes=None, cols=None, pid='pid', event_start='in_date', sep=None, keep_repeats=True, only_unique=False, _fix=True):
     """
     
     examples
@@ -1902,7 +2320,11 @@ def stringify_order(df, codes=None, cols=None, pid='pid', event_start='in_date',
      'L04AB04': 'a',
      'L04AB06': 'g',
      'L04AC05': 'u'}
-
+    
+    bio_codes={
+        'e' : '4AB01',
+        'i' : '4AB02',
+        'a' : '4AB04'}
     
     a=stringify_order(  
             df=df,
@@ -1912,7 +2334,7 @@ def stringify_order(df, codes=None, cols=None, pid='pid', event_start='in_date',
             event_start='start_date',
             sep=',',
             keep_repeats=True,
-            only_unique=True
+            only_unique=False
             )
     
     codes={
@@ -1937,14 +2359,16 @@ def stringify_order(df, codes=None, cols=None, pid='pid', event_start='in_date',
     
     
     # fix formatting of input    
-    codes,  cols, old_codes, replace = fix_args(df=df, codes=codes, cols=cols, sep=sep)
+    if _fix:
+        df, cols = to_df(df=df, cols=cols)
+        codes, cols, allcodes, sep = fix_args(df=df, codes=codes, cols=cols, sep=sep)
     
     # get the rows with the relevant columns
-    rows=get_rows(df=df, codes=codes, cols=cols, sep=sep)
+    rows=get_rows(df=df, codes=allcodes, cols=cols, sep=sep, _fix=False)
     subset=df[rows].sort_values(by=[pid, event_start]).set_index('pid')
     
     # extract relevant codes and aggregate for each person 
-    code_series=extract_codes(df=subset, codes=replace, cols=cols, sep=sep, new_sep='', merge=True, out='text')
+    code_series=extract_codes(df=subset, codes=codes, cols=cols, sep=sep, new_sep='', merge=True, out='text', _fix=False)
 #    if isinstance(code_series, pd.DataFrame):
 #        code_series = pd.Series(code_series)
     string_df=code_series.groupby(level=0).apply(lambda codes: codes.str.cat())
@@ -2251,13 +2675,14 @@ def stringify_time(df,
     return string_df
           
 #%%
-def read_codebooks_csv(path='C:/Users/hmelberg/Google Drive/sandre/resources', 
-                   codebooks=['icd', 'atc', 'ncmp', 'ncsp', 'drg'],
+def read_codebooks_csv(path=None, 
+                   codebooks=None,
+                   language=None,
                    cols=None,
                    case=None,
                    dot=True,
                    merge=True,
-                   sep=';',
+                   sep=',',
                    info=None): 
     """
     Reads csv files desribing medical codes return a dict with the codebooks 
@@ -2279,6 +2704,27 @@ def read_codebooks_csv(path='C:/Users/hmelberg/Google Drive/sandre/resources',
     """
     # if no books specified, read all books that are discovered (or only last version ot it?)
     # code to find the books
+    import os
+    if not path:
+        path = os.path.abspath(rr.__file__)
+        
+        path = path.replace('__init__.py', 'codebooks\\atc_2015_eng.csv')
+        path = path.replace('__init__.py', 'codebooks\\icd10cm_order_2017.txt')
+    
+    
+    atc = pd.read_csv(path, sep=';')
+    atc.text=atc.text.str.strip()
+    
+    atc.to_csv(path, sep=';')
+    
+    from io import StringIO
+    import io
+    a = StringIO()
+    
+    
+    with open(path, 'r') as file:
+        in_memory_file = file.read()
+    
     
     
     # enable file specific reding of files, keywords and values relvant for reading a particular file is in info[filname]
